@@ -266,9 +266,10 @@ def estimate_memory_requirements(model_id: str) -> Dict[str, float]:
     
     total_params = embedding_params + attention_params + ffn_params
     
-    # Estimate memory requirements
+    # Estimate memory requirements for different quantization types
     fp16_size_gb = total_params * 2 / (1024 ** 3)  # 2 bytes per parameter for fp16
     bnb4bit_size_gb = total_params * 0.5 / (1024 ** 3)  # 0.5 bytes per parameter for 4-bit
+    bnb8bit_size_gb = total_params * 1 / (1024 ** 3)  # 1 byte per parameter for 8-bit
     
     # Estimate activation memory (rough approximation)
     batch_size = 1
@@ -283,10 +284,12 @@ def estimate_memory_requirements(model_id: str) -> Dict[str, float]:
         "total_parameters": total_params,
         "fp16_size_gb": fp16_size_gb,
         "bnb4bit_size_gb": bnb4bit_size_gb,
+        "bnb8bit_size_gb": bnb8bit_size_gb,
         "activation_size_gb": activation_size_gb,
         "kv_cache_size_gb": kv_cache_size_gb,
         "total_fp16_gb": fp16_size_gb + activation_size_gb + kv_cache_size_gb,
         "total_bnb4bit_gb": bnb4bit_size_gb + activation_size_gb + kv_cache_size_gb,
+        "total_bnb8bit_gb": bnb8bit_size_gb + activation_size_gb + kv_cache_size_gb,
     }
 
 

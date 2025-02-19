@@ -1,8 +1,8 @@
 """
-Llama Kernel - Memory-efficient PyTorch kernel for Llama 3.2 inference
+AI Inference - Memory-efficient PyTorch kernel for AI model inference
 """
 
-from .model import LlamaInference
+from .model import ModelInference
 
-__all__ = ["LlamaInference"]
+__all__ = ["ModelInference"]
 __version__ = "0.1.0" 

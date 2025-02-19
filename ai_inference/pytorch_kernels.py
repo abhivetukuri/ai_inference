@@ -32,6 +32,7 @@ Classes:
     Linear4Bit: 4-bit quantized linear layer with optimized matrix multiplication
     QuantizedAttention: Memory-efficient attention with 4-bit weights
     QuantizedMLP: Optimized MLP implementation with SwiGLU activation
+    Linear8Bit: Linear layer using 8-bit quantized weights with PyTorch
 
 Usage:
     These kernels are typically used internally by the LlamaInference class.
@@ -751,4 +752,190 @@ class QuantizedMLP(nn.Module):
             return self._fused_forward(x)
         
         # Default implementation for smaller batches
-        return self._forward_impl(x) 
+        return self._forward_impl(x)
+
+
+class Linear8Bit(nn.Module):
+    """
+    Linear layer using 8-bit quantized weights with PyTorch.
+    Provides a good balance between memory efficiency and accuracy.
+    """
+    def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        
+        # Initialize quantized weights (8-bit values)
+        self.quantized_weight = nn.Parameter(
+            torch.zeros((in_features, out_features), dtype=torch.uint8, device=device),
+            requires_grad=False
+        )
+        
+        # Initialize quantization parameters
+        self.quant_block_size = 32
+        num_blocks = math.ceil(in_features / self.quant_block_size)
+        self.scales = nn.Parameter(
+            torch.ones((num_blocks, out_features), dtype=torch.float16, device=device),
+            requires_grad=False
+        )
+        self.zeros = nn.Parameter(
+            torch.zeros((num_blocks, out_features), dtype=torch.float16, device=device),
+            requires_grad=False
+        )
+        
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(out_features, dtype=torch.float16, device=device))
+        else:
+            self.register_parameter('bias', None)
+        
+        # Cache for optimized implementation
+        self._optimized_forward = None
+        
+        # Compile the forward function if torch.compile is available
+        if TORCH_COMPILE_AVAILABLE:
+            self._setup_compiled_forward()
+    
+    def _setup_compiled_forward(self):
+        """Set up compiled forward function if available."""
+        if TORCH_COMPILE_AVAILABLE:
+            try:
+                self._optimized_forward = torch.compile(self._optimized_matmul)
+            except Exception:
+                pass
+    
+    def forward(self, x):
+        """
+        Forward pass through the 8-bit quantized linear layer.
+        
+        Args:
+            x: Input tensor of shape [..., in_features]
+            
+        Returns:
+            Output tensor of shape [..., out_features]
+        """
+        # Reshape input if needed
+        orig_shape = x.shape
+        if len(orig_shape) > 2:
+            x = x.reshape(-1, self.in_features)
+        
+        # Use optimized implementation if available
+        if self._optimized_forward is not None:
+            output = self._optimized_forward(x)
+        else:
+            output = self._optimized_matmul(x)
+        
+        # Add bias if present
+        if self.bias is not None:
+            output += self.bias
+        
+        # Reshape output back to original batch dimensions if needed
+        if len(orig_shape) > 2:
+            output = output.reshape(*orig_shape[:-1], self.out_features)
+        
+        return output
+    
+    def _optimized_matmul(self, a):
+        """
+        Perform matrix multiplication with 8-bit quantized weights.
+        Optimized with vectorized operations and memory access patterns.
+        
+        Args:
+            a: Input tensor of shape (M, K)
+            
+        Returns:
+            Output tensor of shape (M, N)
+        """
+        # Get dimensions
+        M, K = a.shape
+        N = self.out_features
+        
+        # Allocate output
+        c = torch.zeros((M, N), device=a.device, dtype=torch.float16)
+        
+        # Process each block of the weight matrix
+        for block_idx in range(math.ceil(K / self.quant_block_size)):
+            start_idx = block_idx * self.quant_block_size
+            end_idx = min(start_idx + self.quant_block_size, K)
+            block_size = end_idx - start_idx
+            
+            # Get input for this block
+            a_block = a[:, start_idx:end_idx]
+            
+            # Get scales and zeros for this block
+            scale = self.scales[block_idx].unsqueeze(0)  # [1, out_features]
+            zero = self.zeros[block_idx].unsqueeze(0)    # [1, out_features]
+            
+            # Get quantized weights for this block
+            w_block = self.quantized_weight[start_idx:end_idx]  # [block_size, out_features]
+            
+            # Dequantize weights (vectorized)
+            w_block = scale * (w_block.to(torch.float16) - zero)  # [block_size, out_features]
+            
+            # Perform matrix multiplication for the block
+            c += torch.matmul(a_block, w_block)
+        
+        return c
+    
+    @classmethod
+    def from_float(cls, float_linear, quant_block_size=32):
+        """
+        Convert a regular nn.Linear to an 8-bit quantized version.
+        
+        Args:
+            float_linear: Regular nn.Linear layer
+            quant_block_size: Size of quantization blocks
+            
+        Returns:
+            Quantized linear layer
+        """
+        device = float_linear.weight.device
+        in_features, out_features = float_linear.in_features, float_linear.out_features
+        
+        # Create new 8-bit linear layer
+        quantized = cls(in_features, out_features, 
+                        bias=float_linear.bias is not None,
+                        device=device)
+        
+        # Quantize weights to 8-bit
+        weight = float_linear.weight.data.t()  # Transpose to [in_features, out_features]
+        
+        # Compute scales and zero points for each block
+        num_blocks = math.ceil(in_features / quant_block_size)
+        for block_idx in range(num_blocks):
+            start_idx = block_idx * quant_block_size
+            end_idx = min(start_idx + quant_block_size, in_features)
+            if start_idx >= in_features:
+                break
+                
+            block = weight[start_idx:end_idx]  # [block_size, out_features]
+            
+            # Compute min and max for each output feature
+            w_min = block.min(dim=0)[0]  # [out_features]
+            w_max = block.max(dim=0)[0]  # [out_features]
+            
+            # Compute scale and zero point
+            scale = (w_max - w_min) / 255  # 255 is the range of 8-bit (0-255)
+            zero = w_min / scale
+            
+            # Handle division by zero
+            scale = torch.where(scale == 0, torch.ones_like(scale), scale)
+            zero = torch.where(torch.isnan(zero) | torch.isinf(zero), torch.zeros_like(zero), zero)
+            
+            # Store scale and zero point
+            if block_idx < quantized.scales.shape[0]:
+                quantized.scales[block_idx] = scale
+                quantized.zeros[block_idx] = zero
+        
+        # Quantize weights to 8-bit integers (0-255)
+        quantized_weight = torch.clamp(
+            torch.round((weight / quantized.scales.unsqueeze(0)) + quantized.zeros.unsqueeze(0)),
+            0, 255
+        ).to(torch.uint8)
+        
+        quantized.quantized_weight = nn.Parameter(quantized_weight, requires_grad=False)
+        
+        # Copy bias if present
+        if float_linear.bias is not None:
+            quantized.bias = nn.Parameter(float_linear.bias.clone().to(torch.float16))
+        
+        return quantized 

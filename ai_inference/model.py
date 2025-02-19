@@ -1,5 +1,5 @@
 """
-Model wrapper for efficient inference with Llama 3.2 using PyTorch.
+Model wrapper for efficient inference with AI models using PyTorch.
 """
 
 import os
@@ -7,34 +7,36 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from transformers.utils import logging
-from typing import List, Optional, Union, Dict, Any, Tuple
+from typing import List, Optional, Union, Dict, Any, Tuple, Literal
 
-from .pytorch_kernels import Linear4Bit
+from .pytorch_kernels import Linear4Bit, Linear8Bit
 from .utils import get_memory_usage
 
 
-class LlamaInference:
+class ModelInference:
     """
-    Memory-efficient inference for Llama 3.2 models using PyTorch.
+    Memory-efficient inference for AI models using PyTorch.
     """
     
     def __init__(
         self,
-        model_id: str = "meta-llama/Llama-3.2-1B-Instruct",
+        model_id: str = "meta-llama/Llama-2-7b-chat-hf",
         device: str = "cuda",
         use_flash_attention: bool = True,
+        quantization: Literal["4bit", "8bit", "fp16"] = "4bit",
         max_memory: Optional[Dict[Union[int, str], Union[int, str]]] = None,
         offload_folder: Optional[str] = None,
         low_cpu_mem_usage: bool = True,
         cache_dir: Optional[str] = None,
     ):
         """
-        Initialize the Llama model with PyTorch for memory-efficient inference.
+        Initialize the model with PyTorch for memory-efficient inference.
         
         Args:
             model_id: HuggingFace model ID
             device: Device to load the model on ('cuda', 'cpu')
             use_flash_attention: Whether to use flash attention for faster inference
+            quantization: Quantization type to use ('4bit', '8bit', or 'fp16')
             max_memory: Maximum memory to use for each GPU
             offload_folder: Folder to offload weights to
             low_cpu_mem_usage: Whether to use low CPU memory usage when loading
@@ -42,6 +44,7 @@ class LlamaInference:
         """
         self.model_id = model_id
         self.device = device
+        self.quantization = quantization
         
         # Set up logging
         logging.set_verbosity_info()
@@ -67,7 +70,6 @@ class LlamaInference:
         
         # Prepare device map
         device_map = None
-        use_4bit = False  # Disable 4-bit quantization by default
         
         if device == "cuda" and torch.cuda.is_available():
             device_map = device
@@ -79,12 +81,12 @@ class LlamaInference:
             self.device = "cpu"
         
         try:
-            # Load the model without quantization
-            self.logger.info(f"Loading model from {model_id} without quantization")
+            # Load the model with appropriate quantization
+            self.logger.info(f"Loading model from {model_id} with {quantization} quantization")
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 device_map=device_map,
-                load_in_4bit=False,
+                load_in_4bit=(quantization == "4bit"),
                 low_cpu_mem_usage=low_cpu_mem_usage,
                 torch_dtype=torch.float16,
                 max_memory=max_memory,
@@ -98,7 +100,7 @@ class LlamaInference:
             # Fallback to standard loading without device mapping
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
-                load_in_4bit=False,
+                load_in_4bit=(quantization == "4bit"),
                 torch_dtype=torch.float16,
                 cache_dir=cache_dir,
             )
@@ -119,15 +121,22 @@ class LlamaInference:
         self.model.generation_config.pad_token_id = self.tokenizer.pad_token_id
         self.model.generation_config.bos_token_id = self.tokenizer.bos_token_id
         self.model.generation_config.eos_token_id = self.tokenizer.eos_token_id
+        
+        # Replace linear layers with quantized versions if needed
+        if quantization in ["4bit", "8bit"]:
+            self._replace_linear_layers()
     
     def _replace_linear_layers(self):
         """
-        Replace nn.Linear layers with our custom Linear4Bit layers.
+        Replace nn.Linear layers with our custom quantized linear layers.
         """
-        self.logger.info("Replacing linear layers with PyTorch 4-bit linear layers")
+        self.logger.info(f"Replacing linear layers with PyTorch {self.quantization} linear layers")
         
         # Count of replaced layers
         replaced_count = 0
+        
+        # Choose the appropriate linear layer class
+        LinearClass = Linear4Bit if self.quantization == "4bit" else Linear8Bit
         
         # Recursively replace linear layers
         for name, module in self.model.named_modules():
@@ -141,9 +150,9 @@ class LlamaInference:
                 else:
                     parent = self.model
                 
-                # Create a new PyTorch 4-bit linear layer
+                # Create a new quantized linear layer
                 try:
-                    quantized_linear = Linear4Bit.from_float(module)
+                    quantized_linear = LinearClass.from_float(module)
                     
                     # Replace the linear layer
                     setattr(parent, child_name, quantized_linear)
@@ -151,7 +160,7 @@ class LlamaInference:
                 except Exception as e:
                     self.logger.warning(f"Failed to replace layer {name}: {e}")
         
-        self.logger.info(f"Replaced {replaced_count} linear layers with PyTorch 4-bit linear layers")
+        self.logger.info(f"Replaced {replaced_count} linear layers with PyTorch {self.quantization} linear layers")
     
     def generate(
         self,
