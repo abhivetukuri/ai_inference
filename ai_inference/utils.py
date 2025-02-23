@@ -9,6 +9,7 @@ import psutil
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Union, Callable
 import matplotlib.pyplot as plt
+import math
 
 # Check if we can use torch.compile
 TORCH_COMPILE_AVAILABLE = hasattr(torch, "compile") and torch.__version__ >= "2.0.0"
@@ -311,4 +312,61 @@ def log_memory_usage(interval: float = 1.0, duration: float = 60.0) -> List[Dict
         memory_log.append(get_memory_usage())
         time.sleep(interval)
     
-    return memory_log 
+    return memory_log
+
+
+def calculate_optimal_batch_size(
+    model: torch.nn.Module,
+    seq_length: int = 2048,
+    max_memory_gb: Optional[float] = None,
+    safety_margin: float = 0.8
+) -> int:
+    """
+    Calculate optimal batch size based on available memory and model requirements.
+    
+    Args:
+        model: PyTorch model
+        seq_length: Maximum sequence length
+        max_memory_gb: Maximum available GPU memory in GB
+        safety_margin: Fraction of memory to use (default: 0.8)
+        
+    Returns:
+        Optimal batch size
+    """
+    if not torch.cuda.is_available():
+        return 1
+        
+    # Get available GPU memory
+    if max_memory_gb is None:
+        max_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    
+    # Calculate available memory with safety margin
+    available_memory_gb = max_memory_gb * safety_margin
+    
+    # Get model configuration
+    config = getattr(model, "config", None)
+    if config is None:
+        return 1
+        
+    hidden_size = getattr(config, "hidden_size", 0)
+    num_hidden_layers = getattr(config, "num_hidden_layers", 0)
+    
+    # Calculate memory per sample
+    # This includes:
+    # - Hidden states: seq_length * hidden_size * 4 bytes
+    # - Attention states: seq_length * hidden_size * 4 bytes
+    # - KV cache: seq_length * hidden_size * 2 bytes * 2 (key and value)
+    memory_per_sample = (
+        seq_length * hidden_size * 4 +  # Hidden states
+        seq_length * hidden_size * 4 +  # Attention states
+        seq_length * hidden_size * 2 * 2  # KV cache
+    ) / (1024 ** 3)  # Convert to GB
+    
+    # Calculate maximum batch size based on available memory
+    max_batch_size = int(available_memory_gb / memory_per_sample)
+    
+    # Round down to nearest power of 2 for better memory alignment
+    max_batch_size = 2 ** int(math.log2(max_batch_size))
+    
+    # Ensure minimum batch size of 1
+    return max(1, max_batch_size) 

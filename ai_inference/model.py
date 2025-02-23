@@ -10,7 +10,7 @@ from transformers.utils import logging
 from typing import List, Optional, Union, Dict, Any, Tuple, Literal
 
 from .pytorch_kernels import Linear4Bit, Linear8Bit
-from .utils import get_memory_usage
+from .utils import get_memory_usage, calculate_optimal_batch_size
 
 
 class ModelInference:
@@ -28,6 +28,8 @@ class ModelInference:
         offload_folder: Optional[str] = None,
         low_cpu_mem_usage: bool = True,
         cache_dir: Optional[str] = None,
+        dynamic_batch_size: bool = True,
+        safety_margin: float = 0.8,
     ):
         """
         Initialize the model with PyTorch for memory-efficient inference.
@@ -41,10 +43,14 @@ class ModelInference:
             offload_folder: Folder to offload weights to
             low_cpu_mem_usage: Whether to use low CPU memory usage when loading
             cache_dir: Directory to cache models
+            dynamic_batch_size: Whether to use dynamic batch sizing
+            safety_margin: Safety margin for dynamic batch sizing
         """
         self.model_id = model_id
         self.device = device
         self.quantization = quantization
+        self.dynamic_batch_size = dynamic_batch_size
+        self.safety_margin = safety_margin
         
         # Set up logging
         logging.set_verbosity_info()
@@ -125,6 +131,16 @@ class ModelInference:
         # Replace linear layers with quantized versions if needed
         if quantization in ["4bit", "8bit"]:
             self._replace_linear_layers()
+        
+        # Calculate optimal batch size if dynamic batching is enabled
+        if dynamic_batch_size and self.device == "cuda":
+            self.optimal_batch_size = calculate_optimal_batch_size(
+                self.model,
+                safety_margin=safety_margin
+            )
+            self.logger.info(f"Calculated optimal batch size: {self.optimal_batch_size}")
+        else:
+            self.optimal_batch_size = 1
     
     def _replace_linear_layers(self):
         """
@@ -270,20 +286,24 @@ class ModelInference:
     def batch_generate(
         self,
         prompts: List[str],
-        batch_size: int = 8,
+        batch_size: Optional[int] = None,
         **kwargs
     ) -> List[str]:
         """
-        Generate text for a batch of prompts.
+        Generate text for a batch of prompts with dynamic batch sizing.
         
         Args:
             prompts: List of input prompts
-            batch_size: Batch size for generation
+            batch_size: Optional batch size override
             **kwargs: Additional arguments for generation
             
         Returns:
             List of generated texts
         """
+        # Use dynamic batch size if enabled and no override provided
+        if batch_size is None and self.dynamic_batch_size:
+            batch_size = self.optimal_batch_size
+        
         results = []
         
         # Process prompts in batches
@@ -291,6 +311,10 @@ class ModelInference:
             batch_prompts = prompts[i:i+batch_size]
             batch_results = self.generate(batch_prompts, **kwargs)
             results.extend(batch_results)
+            
+            # Clear cache between batches to prevent memory buildup
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
         
         return results
     

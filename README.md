@@ -26,6 +26,7 @@ print(response)
 - **Fast Inference**: Optimized kernels for different batch sizes and hardware
 - **Smart Caching**: Efficient memory management and tensor reuse
 - **Hardware Optimized**: Support for CUDA, TF32, and Flash Attention 2
+- **Dynamic Batching**: Automatic batch size optimization based on available memory
 
 ## Performance
 
@@ -38,7 +39,7 @@ print(response)
 | 13B params | 4-bit       | ~6.5GB      | 15.23 tokens/sec |
 | 13B params | 8-bit       | ~13.0GB     | 16.45 tokens/sec |
 
-*Benchmarks on Apple M4 with 16GB RAM*
+*Benchmarks on Apple M2 with 8GB RAM*
 
 ## Advanced Usage
 
@@ -52,7 +53,20 @@ model = ModelInference('your-model-id', quantization='8bit')  # Better accuracy,
 model = ModelInference('your-model-id', quantization='4bit')  # Less memory, slightly lower accuracy
 model = ModelInference('your-model-id', quantization='fp16')  # Full precision, maximum memory
 
+# Enable dynamic batch sizing (automatically enabled by default)
+model = ModelInference('your-model-id', dynamic_batch_size=True, safety_margin=0.8)
+
 optimize_memory_usage(model.model)
+```
+
+### Batch Processing
+```python
+# Process multiple prompts with dynamic batch sizing
+prompts = ["Prompt 1", "Prompt 2", "Prompt 3", "Prompt 4"]
+results = model.batch_generate(prompts)  # Uses optimal batch size
+
+# Override batch size if needed
+results = model.batch_generate(prompts, batch_size=2)
 ```
 
 ### Benchmarking
@@ -91,6 +105,7 @@ python main.py --batch_size 4
 - Contiguous memory layouts
 - Strategic tensor clearing
 - Hardware-specific implementations
+- Dynamic batch sizing based on available memory
 
 ## Requirements
 
