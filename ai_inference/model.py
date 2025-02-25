@@ -11,6 +11,7 @@ from typing import List, Optional, Union, Dict, Any, Tuple, Literal
 
 from .pytorch_kernels import Linear4Bit, Linear8Bit
 from .utils import get_memory_usage, calculate_optimal_batch_size
+from .attention import OptimizedAttention
 
 
 class ModelInference:
@@ -51,6 +52,7 @@ class ModelInference:
         self.quantization = quantization
         self.dynamic_batch_size = dynamic_batch_size
         self.safety_margin = safety_margin
+        self.use_flash_attention = use_flash_attention
         
         # Set up logging
         logging.set_verbosity_info()
@@ -132,6 +134,9 @@ class ModelInference:
         if quantization in ["4bit", "8bit"]:
             self._replace_linear_layers()
         
+        # Replace attention layers with optimized versions
+        self._replace_attention_layers()
+        
         # Calculate optimal batch size if dynamic batching is enabled
         if dynamic_batch_size and self.device == "cuda":
             self.optimal_batch_size = calculate_optimal_batch_size(
@@ -177,6 +182,67 @@ class ModelInference:
                     self.logger.warning(f"Failed to replace layer {name}: {e}")
         
         self.logger.info(f"Replaced {replaced_count} linear layers with PyTorch {self.quantization} linear layers")
+    
+    def _replace_attention_layers(self):
+        """
+        Replace attention layers with optimized versions.
+        """
+        self.logger.info("Replacing attention layers with optimized versions")
+        
+        # Count of replaced layers
+        replaced_count = 0
+        
+        # Recursively replace attention layers
+        for name, module in self.model.named_modules():
+            if isinstance(module, (torch.nn.MultiheadAttention, torch.nn.Attention)):
+                # Get the parent module
+                parent_name = ".".join(name.split(".")[:-1])
+                child_name = name.split(".")[-1]
+                
+                if parent_name:
+                    parent = self.model.get_submodule(parent_name)
+                else:
+                    parent = self.model
+                
+                # Get attention parameters
+                num_heads = module.num_heads
+                head_dim = module.head_dim if hasattr(module, "head_dim") else module.embed_dim // num_heads
+                dropout = module.dropout.p if isinstance(module.dropout, torch.nn.Dropout) else 0.0
+                
+                # Create optimized attention layer
+                try:
+                    optimized_attention = OptimizedAttention(
+                        num_heads=num_heads,
+                        head_dim=head_dim,
+                        dropout=dropout,
+                        use_flash_attention=self.use_flash_attention,
+                        causal=True  # Most LLMs use causal attention
+                    )
+                    
+                    # Copy weights from original attention layer
+                    if hasattr(module, "in_proj_weight"):
+                        q_proj, k_proj, v_proj = module.in_proj_weight.chunk(3, dim=0)
+                        optimized_attention.q_proj.weight.data = q_proj
+                        optimized_attention.k_proj.weight.data = k_proj
+                        optimized_attention.v_proj.weight.data = v_proj
+                    
+                    if hasattr(module, "in_proj_bias"):
+                        q_bias, k_bias, v_bias = module.in_proj_bias.chunk(3, dim=0)
+                        optimized_attention.q_proj.bias.data = q_bias
+                        optimized_attention.k_proj.bias.data = k_bias
+                        optimized_attention.v_proj.bias.data = v_bias
+                    
+                    if hasattr(module, "out_proj"):
+                        optimized_attention.out_proj.weight.data = module.out_proj.weight.data
+                        optimized_attention.out_proj.bias.data = module.out_proj.bias.data
+                    
+                    # Replace the attention layer
+                    setattr(parent, child_name, optimized_attention)
+                    replaced_count += 1
+                except Exception as e:
+                    self.logger.warning(f"Failed to replace attention layer {name}: {e}")
+        
+        self.logger.info(f"Replaced {replaced_count} attention layers with optimized versions")
     
     def generate(
         self,
