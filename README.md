@@ -46,7 +46,7 @@ print(response)
 | 13B params | 8-bit       | Yes            | ~13.0GB     | 19.45 tokens/sec |
 | 13B params | 8-bit       | No             | ~13.0GB     | 16.45 tokens/sec |
 
-*Benchmarks on Apple M2 with 8GB RAM*
+*Benchmarks on Apple M2 chip with 8GB unified memory*
 
 ## Advanced Usage
 
@@ -126,9 +126,9 @@ python main.py --use_flash_attention
 
 - Python 3.9+
 - PyTorch 2.0+
-- CUDA-capable GPU (optional)
 - 8GB+ RAM
-- Flash Attention 2 (optional, for faster attention computation)
+- Apple Silicon (M1/M2/M3) or CUDA-capable GPU
+- Optional: Flash Attention 2 for faster attention computation (CUDA only)
 
 ## License
 

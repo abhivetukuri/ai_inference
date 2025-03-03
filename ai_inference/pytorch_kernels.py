@@ -1,42 +1,6 @@
 """
-Custom PyTorch kernels for 4-bit quantized inference with Llama models.
-
-This module provides highly optimized PyTorch implementations for 4-bit quantized 
-inference, designed to maximize both memory efficiency and processing speed.
-
-Key optimizations include:
-
-1. Multiple Matrix Multiplication Implementations:
-   - Lookup table-based implementation for small batches on GPU
-   - Batched implementation for larger inputs
-   - Optimized implementation with vectorized operations
-
-2. Memory Optimization Techniques:
-   - Pre-allocated tensor buffers to minimize memory fragmentation
-   - Contiguous memory layouts for optimal access patterns
-   - Strategic tensor clearing to aid garbage collection
-   - Explicit dtype management to avoid unnecessary conversions
-
-3. Hardware Acceleration:
-   - Flash Attention 2 integration with robust fallback mechanisms
-   - CUDA graph support for repeated operations
-   - TF32 precision on supported hardware
-   - Optimized softmax computation with controlled precision
-
-4. Compilation Optimizations:
-   - Function-specific compilation with torch.compile
-   - Fullgraph optimization for maximum performance
-   - Automatic selection of optimal implementation based on input size and hardware
-
-Classes:
-    Linear4Bit: 4-bit quantized linear layer with optimized matrix multiplication
-    QuantizedAttention: Memory-efficient attention with 4-bit weights
-    QuantizedMLP: Optimized MLP implementation with SwiGLU activation
-    Linear8Bit: Linear layer using 8-bit quantized weights with PyTorch
-
-Usage:
-    These kernels are typically used internally by the LlamaInference class.
-    See the main README for usage examples.
+Custom PyTorch kernels for efficient inference with quantized models.
+Provides optimized implementations for 4-bit and 8-bit quantized inference.
 """
 
 import torch

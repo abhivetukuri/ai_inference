@@ -32,36 +32,10 @@ def _flash_attention_forward(
     Returns:
         Output tensor of shape (batch_size, seq_len, num_heads, head_dim)
     """
-    if not torch.cuda.is_available():
-        return _standard_attention_forward(
-            query, key, value, mask, dropout_p, causal, softmax_scale
-        )
-    
-    # Reshape for flash attention
-    batch_size, seq_len, num_heads, head_dim = query.shape
-    q = query.transpose(1, 2).reshape(batch_size * num_heads, seq_len, head_dim)
-    k = key.transpose(1, 2).reshape(batch_size * num_heads, seq_len, head_dim)
-    v = value.transpose(1, 2).reshape(batch_size * num_heads, seq_len, head_dim)
-    
-    # Use flash attention if available
-    try:
-        from flash_attn import flash_attn_func
-        output = flash_attn_func(
-            q, k, v,
-            mask=mask,
-            dropout_p=dropout_p,
-            causal=causal,
-            softmax_scale=softmax_scale
-        )
-    except ImportError:
-        # Fallback to standard attention if flash attention is not available
-        output = _standard_attention_forward(
-            query, key, value, mask, dropout_p, causal, softmax_scale
-        )
-    
-    # Reshape back
-    output = output.reshape(batch_size, num_heads, seq_len, head_dim)
-    return output.transpose(1, 2)
+    # Always use standard attention since flash attention is not available
+    return _standard_attention_forward(
+        query, key, value, mask, dropout_p, causal, softmax_scale
+    )
 
 def _standard_attention_forward(
     query: torch.Tensor,
