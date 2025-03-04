@@ -54,29 +54,23 @@ class ModelInference:
         self.safety_margin = safety_margin
         self.use_flash_attention = use_flash_attention
         
-        # Set up logging
         logging.set_verbosity_info()
         self.logger = logging.get_logger("transformers")
         
-        # Load tokenizer
         self.logger.info(f"Loading tokenizer from {model_id}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir)
         
-        # Set pad token to eos token if not set
         if self.tokenizer.pad_token is None:
             self.logger.info("Setting pad_token to eos_token")
             self.tokenizer.pad_token = self.tokenizer.eos_token
             
-            # Handle case where eos_token_id is a list
             if isinstance(self.tokenizer.eos_token_id, list) and len(self.tokenizer.eos_token_id) > 0:
                 self.logger.info(f"Setting pad_token_id to first eos_token_id: {self.tokenizer.eos_token_id[0]}")
                 self.tokenizer.pad_token_id = self.tokenizer.eos_token_id[0]
         
-        # Load model configuration
         self.logger.info(f"Loading model configuration from {model_id}")
         self.config = AutoConfig.from_pretrained(model_id, cache_dir=cache_dir)
         
-        # Prepare device map
         device_map = None
         
         if device == "cuda" and torch.cuda.is_available():
@@ -89,7 +83,6 @@ class ModelInference:
             self.device = "cpu"
         
         try:
-            # Load the model with appropriate quantization
             self.logger.info(f"Loading model from {model_id} with {quantization} quantization")
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
@@ -105,7 +98,6 @@ class ModelInference:
             self.logger.warning(f"Error loading model with device mapping: {e}")
             self.logger.info("Falling back to standard loading without device mapping")
             
-            # Fallback to standard loading without device mapping
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 load_in_4bit=(quantization == "4bit"),
@@ -113,16 +105,13 @@ class ModelInference:
                 cache_dir=cache_dir,
             )
             
-            # Move model to device manually
             if self.device == "cuda" and torch.cuda.is_available():
                 self.model = self.model.to("cuda")
         
-        # Enable flash attention if requested and available
         if use_flash_attention and hasattr(self.model.config, "attn_implementation"):
             self.model.config.attn_implementation = "flash_attention_2"
             self.logger.info("Using Flash Attention 2 for faster inference")
         
-        # Set up generation config
         if self.tokenizer.pad_token_id is None and self.model.config.pad_token_id is not None:
             self.tokenizer.pad_token_id = self.model.config.pad_token_id
         
@@ -130,14 +119,11 @@ class ModelInference:
         self.model.generation_config.bos_token_id = self.tokenizer.bos_token_id
         self.model.generation_config.eos_token_id = self.tokenizer.eos_token_id
         
-        # Replace linear layers with quantized versions if needed
         if quantization in ["4bit", "8bit"]:
             self._replace_linear_layers()
         
-        # Replace attention layers with optimized versions
         self._replace_attention_layers()
         
-        # Calculate optimal batch size if dynamic batching is enabled
         if dynamic_batch_size and self.device == "cuda":
             self.optimal_batch_size = calculate_optimal_batch_size(
                 self.model,
@@ -153,16 +139,12 @@ class ModelInference:
         """
         self.logger.info(f"Replacing linear layers with PyTorch {self.quantization} linear layers")
         
-        # Count of replaced layers
         replaced_count = 0
         
-        # Choose the appropriate linear layer class
         LinearClass = Linear4Bit if self.quantization == "4bit" else Linear8Bit
         
-        # Recursively replace linear layers
         for name, module in self.model.named_modules():
             if isinstance(module, torch.nn.Linear):
-                # Get the parent module
                 parent_name = ".".join(name.split(".")[:-1])
                 child_name = name.split(".")[-1]
                 
@@ -171,11 +153,9 @@ class ModelInference:
                 else:
                     parent = self.model
                 
-                # Create a new quantized linear layer
                 try:
                     quantized_linear = LinearClass.from_float(module)
                     
-                    # Replace the linear layer
                     setattr(parent, child_name, quantized_linear)
                     replaced_count += 1
                 except Exception as e:
@@ -189,13 +169,10 @@ class ModelInference:
         """
         self.logger.info("Replacing attention layers with optimized versions")
         
-        # Count of replaced layers
         replaced_count = 0
         
-        # Recursively replace attention layers
         for name, module in self.model.named_modules():
             if isinstance(module, (torch.nn.MultiheadAttention, torch.nn.Attention)):
-                # Get the parent module
                 parent_name = ".".join(name.split(".")[:-1])
                 child_name = name.split(".")[-1]
                 
@@ -204,12 +181,10 @@ class ModelInference:
                 else:
                     parent = self.model
                 
-                # Get attention parameters
                 num_heads = module.num_heads
                 head_dim = module.head_dim if hasattr(module, "head_dim") else module.embed_dim // num_heads
                 dropout = module.dropout.p if isinstance(module.dropout, torch.nn.Dropout) else 0.0
                 
-                # Create optimized attention layer
                 try:
                     optimized_attention = OptimizedAttention(
                         num_heads=num_heads,
@@ -219,7 +194,6 @@ class ModelInference:
                         causal=True  # Most LLMs use causal attention
                     )
                     
-                    # Copy weights from original attention layer
                     if hasattr(module, "in_proj_weight"):
                         q_proj, k_proj, v_proj = module.in_proj_weight.chunk(3, dim=0)
                         optimized_attention.q_proj.weight.data = q_proj
@@ -236,7 +210,6 @@ class ModelInference:
                         optimized_attention.out_proj.weight.data = module.out_proj.weight.data
                         optimized_attention.out_proj.bias.data = module.out_proj.bias.data
                     
-                    # Replace the attention layer
                     setattr(parent, child_name, optimized_attention)
                     replaced_count += 1
                 except Exception as e:
@@ -285,10 +258,8 @@ class ModelInference:
             truncation=True,
         )
         
-        # Move inputs to device
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         
-        # Generate text
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
@@ -307,14 +278,12 @@ class ModelInference:
         # Decode outputs
         decoded_outputs = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
         
-        # Reshape outputs if multiple sequences per prompt
         if num_return_sequences > 1:
             decoded_outputs = [
                 decoded_outputs[i:i+num_return_sequences]
                 for i in range(0, len(decoded_outputs), num_return_sequences)
             ]
         
-        # Return single output or list of outputs
         if is_single_prompt and num_return_sequences == 1:
             return decoded_outputs[0]
         return decoded_outputs
@@ -341,10 +310,8 @@ class ModelInference:
             truncation=True,
         ).to(self.device)
         
-        # Get embeddings
         with torch.no_grad():
             outputs = self.model.model(**inputs, output_hidden_states=True)
-            # Use the last hidden state of the last token as the embedding
             embeddings = outputs.hidden_states[-1][:, -1, :]
         
         return embeddings
@@ -378,7 +345,6 @@ class ModelInference:
             batch_results = self.generate(batch_prompts, **kwargs)
             results.extend(batch_results)
             
-            # Clear cache between batches to prevent memory buildup
             if self.device == "cuda":
                 torch.cuda.empty_cache()
         
@@ -401,16 +367,13 @@ class ModelInference:
             filename: Name of the file to save the snapshot to
         """
         if self.device == "cuda":
-            # Get current memory usage
             current_memory = torch.cuda.memory_allocated() / (1024 ** 3)  # GB
             max_memory = torch.cuda.max_memory_allocated() / (1024 ** 3)  # GB
             
-            # Save to file
             with open(filename, "w") as f:
                 f.write(f"Current memory usage: {current_memory:.2f} GB\n")
                 f.write(f"Maximum memory usage: {max_memory:.2f} GB\n")
                 
-                # Log model size
                 f.write("\nModel size breakdown:\n")
                 total_params = 0
                 for name, param in self.model.named_parameters():
@@ -443,11 +406,9 @@ class ModelInference:
         """
         try:
             import bitsandbytes
-            # Check if the version is compatible
             version = getattr(bitsandbytes, "__version__", "0.0.0")
             major, minor, patch = map(int, version.split(".")[:3])
             
-            # Require at least version 0.41.0
             if major > 0 or (major == 0 and minor >= 41):
                 return True
             else:

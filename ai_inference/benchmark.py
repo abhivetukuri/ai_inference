@@ -1,7 +1,3 @@
-"""
-Benchmarking and testing utilities for AI inference.
-"""
-
 import time
 import torch
 import psutil
@@ -18,7 +14,6 @@ from .utils import get_memory_usage, estimate_memory_requirements
 
 @dataclass
 class BenchmarkResult:
-    """Results from a single benchmark run."""
     model_size: str
     quantization: str
     use_flash_attention: bool
@@ -41,23 +36,6 @@ def run_benchmark(
     num_tokens: int = 100,
     warmup_runs: int = 2,
 ) -> BenchmarkResult:
-    """
-    Run a benchmark with the specified configuration.
-    
-    Args:
-        model_id: HuggingFace model ID
-        quantization: Quantization type ('4bit', '8bit', 'fp16')
-        use_flash_attention: Whether to use Flash Attention 2
-        batch_size: Optional batch size override
-        num_runs: Number of benchmark runs
-        seq_length: Input sequence length
-        num_tokens: Number of tokens to generate
-        warmup_runs: Number of warmup runs
-        
-    Returns:
-        BenchmarkResult with performance metrics
-    """
-    # Initialize model
     model = ModelInference(
         model_id=model_id,
         device="cuda" if torch.cuda.is_available() else "cpu",
@@ -66,16 +44,13 @@ def run_benchmark(
         dynamic_batch_size=batch_size is None
     )
     
-    # Generate test prompts
     prompts = ["The quick brown fox jumps over the lazy dog."] * (batch_size or model.optimal_batch_size)
     
-    # Warmup runs
     for _ in range(warmup_runs):
         model.generate(prompts[0], max_length=num_tokens)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     
-    # Benchmark runs
     latencies = []
     token_counts = []
     
@@ -84,8 +59,7 @@ def run_benchmark(
         outputs = model.generate(prompts, max_length=num_tokens)
         end_time = time.time()
         
-        # Calculate metrics
-        latency = (end_time - start_time) * 1000  # ms
+        latency = (end_time - start_time) * 1000
         num_tokens_generated = sum(len(output.split()) for output in outputs)
         
         latencies.append(latency)
@@ -94,15 +68,12 @@ def run_benchmark(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     
-    # Calculate average metrics
     avg_latency = np.mean(latencies)
     avg_tokens = np.mean(token_counts)
-    throughput = (avg_tokens / (avg_latency / 1000))  # tokens per second
+    throughput = (avg_tokens / (avg_latency / 1000))
     
-    # Get memory usage
     memory_stats = get_memory_usage()
     
-    # Get model size
     model_size = estimate_memory_requirements(model_id)
     
     return BenchmarkResult(
@@ -123,16 +94,6 @@ def run_comprehensive_benchmark(
     model_ids: List[str],
     output_file: str = "benchmark_results.json",
 ) -> List[BenchmarkResult]:
-    """
-    Run comprehensive benchmarks across different configurations.
-    
-    Args:
-        model_ids: List of model IDs to benchmark
-        output_file: File to save results to
-        
-    Returns:
-        List of benchmark results
-    """
     results = []
     configs = [
         {"quantization": "4bit", "use_flash_attention": True},
@@ -154,30 +115,18 @@ def run_comprehensive_benchmark(
             except Exception as e:
                 print(f"Failed to run benchmark for {model_id} with config {config}: {e}")
     
-    # Save results
     with open(output_file, "w") as f:
         json.dump([vars(r) for r in results], f, indent=2)
     
     return results
 
 def generate_markdown_table(results: List[BenchmarkResult]) -> str:
-    """
-    Generate a markdown table from benchmark results.
-    
-    Args:
-        results: List of benchmark results
-        
-    Returns:
-        Markdown table string
-    """
-    # Group results by model size
     model_groups = {}
     for result in results:
         if result.model_size not in model_groups:
             model_groups[result.model_size] = []
         model_groups[result.model_size].append(result)
     
-    # Generate table
     table = "| Model Size | Quantization | Flash Attention | Memory Usage | Throughput |\n"
     table += "|------------|--------------|-----------------|--------------|------------|\n"
     
@@ -189,7 +138,6 @@ def generate_markdown_table(results: List[BenchmarkResult]) -> str:
     return table
 
 if __name__ == "__main__":
-    # Example usage
     model_ids = [
         "meta-llama/Llama-2-7b-chat-hf",
         "meta-llama/Llama-2-13b-chat-hf",
@@ -199,4 +147,4 @@ if __name__ == "__main__":
     results = run_comprehensive_benchmark(model_ids)
     markdown_table = generate_markdown_table(results)
     print("\nBenchmark Results:")
-    print(markdown_table) 
+    print(markdown_table)
